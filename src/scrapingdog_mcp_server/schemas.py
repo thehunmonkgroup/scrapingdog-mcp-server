@@ -12,66 +12,69 @@ class GoogleSearchRequest(BaseModel):
 
     advance_search: bool | None = Field(
         None,
-        description="Enable Scrapingdog advanced Google Search mode.",
+        description="Include advanced Google result features and snippets.",
     )
     mob_search: bool | None = Field(
         None,
-        description="Use mobile Google Search results.",
+        description="Return mobile Google search results.",
     )
     html: bool | None = Field(
         None,
-        description="Return the raw Google Search HTML response.",
+        description="Return raw Google results-page HTML instead of parsed JSON.",
     )
-    query: str = Field(..., description="The Google query to search for.")
+    query: str = Field(
+        ...,
+        description="Google search query. Supports operators like site:, inurl:, and intitle:.",
+    )
     domain: str | None = Field(
         None,
-        description="The Google domain to search, such as google.com.",
+        description="Google domain to search, such as google.com or google.co.uk.",
     )
     country: str | None = Field(
         None,
-        description="The country code to search in, such as us or uk.",
+        description="Two-letter country code for localized results, such as us, uk, or fr.",
     )
     location: str | None = Field(
         None,
-        description="The geographic location to search from.",
+        description="Search origin location; city-level values usually work best.",
     )
     language: str | None = Field(
         None,
-        description="The language code for search results, such as en.",
+        description="Language code for results, such as en, es, fr, or de.",
     )
     safe: Literal["active", "off"] | None = Field(
         None,
-        description="Google safe search setting.",
+        description="SafeSearch setting: active filters adult content, off disables filtering.",
     )
     nfpr: bool | None = Field(
         None,
-        description="Exclude results from auto-corrected queries.",
+        description="Exclude results from Google's auto-corrected spelling.",
     )
     filter: bool | None = Field(
         None,
-        description="Enable or disable duplicate result filtering.",
+        description="Enable Google's similar and omitted-results filters.",
     )
     results: int | None = Field(
         None,
         ge=1,
-        description="The number of Google Search results to return.",
+        description="Number of Google results to request.",
     )
     page: int | None = Field(
         None,
         ge=0,
-        description="The Google Search results page to return.",
+        description="Zero-based results page: 0 is the first page, 1 is the second.",
     )
 
 
 class WebpageRequest(BaseModel):
     """Request fields for Scrapingdog webpage scraping."""
 
-    url: str = Field(..., description="The URL to scrape.")
+    url: str = Field(..., description="Decoded absolute URL of the page to scrape.")
     dynamic: bool | None = Field(
         None,
-        description="Enable dynamic browser rendering.",
+        description="Render JavaScript before scraping. Defaults to true when omitted.",
     )
     format: Literal["markdown", "summary", "links", "images"] | None = Field(
         None,
-        description="Optional output format. When omitted, HTML is returned.",
+        description="Output format: markdown, summary, links, or images. Omit for HTML.",
     )
