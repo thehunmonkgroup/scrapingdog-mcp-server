@@ -30,6 +30,14 @@ For example:
 }
 ```
 
+Per-client-session successful tool call limits can be set with
+`SCRAPINGDOG_GOOGLE_SEARCH_SESSION_LIMIT` and
+`SCRAPINGDOG_WEBPAGE_SCRAPE_SESSION_LIMIT`. When provided, each value must be a
+positive integer. The limit applies separately to each MCP client session and
+only successful Scrapingdog-backed calls count against it. Once a tool reaches
+its limit, further calls to that tool in the same session return a clear
+`usage limit reached` tool error.
+
 ### Metrics Sidecar
 
 The server records portable SQLite metrics for search and scrape requests and

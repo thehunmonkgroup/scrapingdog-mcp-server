@@ -11,12 +11,15 @@ from typing_extensions import override
 
 from scrapingdog_mcp_server.core import (
     ScrapingdogClient,
+    ScrapingdogClientError,
     ScrapingdogConfigurationError,
 )
 from scrapingdog_mcp_server.enums import ScrapingdogTools
 from scrapingdog_mcp_server.schemas import GoogleSearchRequest, WebpageRequest
 from scrapingdog_mcp_server.server import (
+    GOOGLE_SEARCH_SESSION_LIMIT_ENV_VAR,
     ScrapingdogMcpApplication,
+    WEBPAGE_SCRAPE_SESSION_LIMIT_ENV_VAR,
     create_mcp_server,
 )
 
@@ -82,6 +85,44 @@ class FailingScrapingdogClient(ScrapingdogClient):
         raise ScrapingdogConfigurationError("SCRAPINGDOG_API_KEY is empty")
 
 
+class IntermittentFailingScrapingdogClient(FakeScrapingdogClient):
+    """Scrapingdog client test double that fails once before succeeding."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.should_fail_search: bool = True
+
+    @override
+    async def google(self, request: GoogleSearchRequest) -> dict[str, Any]:
+        """Fail once, then return a fake Google response.
+
+        :param request: Validated search request model.
+        :type request: GoogleSearchRequest
+        :return: Fake Scrapingdog response.
+        :rtype: dict[str, Any]
+        :raises ScrapingdogClientError: On the first search call.
+        """
+
+        if self.should_fail_search:
+            self.should_fail_search = False
+            raise ScrapingdogClientError("Scrapingdog API returned HTTP 500")
+        return await super().google(request)
+
+
+@pytest.fixture(autouse=True)
+def clear_session_limit_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear session limit configuration unless a test sets it explicitly.
+
+    :param monkeypatch: Pytest monkeypatch fixture.
+    :type monkeypatch: pytest.MonkeyPatch
+    :return: None.
+    :rtype: None
+    """
+
+    monkeypatch.delenv(GOOGLE_SEARCH_SESSION_LIMIT_ENV_VAR, raising=False)
+    monkeypatch.delenv(WEBPAGE_SCRAPE_SESSION_LIMIT_ENV_VAR, raising=False)
+
+
 def run_async(awaitable: Any) -> Any:
     """Run an awaitable for tests.
 
@@ -92,6 +133,52 @@ def run_async(awaitable: Any) -> Any:
     """
 
     return asyncio.run(awaitable)
+
+
+def call_tool_result(
+    mcp_server: Any,
+    tool_name: ScrapingdogTools,
+    arguments: dict[str, Any],
+) -> types.CallToolResult:
+    """Call a tool through the low-level MCP request handler.
+
+    :param mcp_server: FastMCP server instance.
+    :type mcp_server: Any
+    :param tool_name: Tool to call.
+    :type tool_name: ScrapingdogTools
+    :param arguments: Tool arguments.
+    :type arguments: dict[str, Any]
+    :return: MCP call tool result.
+    :rtype: types.CallToolResult
+    """
+
+    low_level_server = getattr(mcp_server, "_mcp_server")
+    handler = low_level_server.request_handlers[types.CallToolRequest]
+    result = run_async(
+        handler(
+            types.CallToolRequest(
+                params=types.CallToolRequestParams(
+                    name=tool_name.value,
+                    arguments=arguments,
+                )
+            )
+        )
+    )
+    return result.root
+
+
+def call_tool_text(call_result: types.CallToolResult) -> str:
+    """Return the first text content item from a tool result.
+
+    :param call_result: MCP call tool result.
+    :type call_result: types.CallToolResult
+    :return: First text content string.
+    :rtype: str
+    """
+
+    content = call_result.content[0]
+    assert isinstance(content, types.TextContent)
+    return content.text
 
 
 def test_tool_list_contains_expected_metadata() -> None:
@@ -244,6 +331,169 @@ def test_webpage_scrape_uses_forced_environment_values(
     assert client.last_scrape_payload is not None
     assert client.last_scrape_payload["dynamic"] is True
     assert client.last_scrape_payload["formats"] == "summary"
+
+
+def test_google_search_session_limit_errors_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Search limits apply after the configured number of successful calls."""
+
+    monkeypatch.setenv(GOOGLE_SEARCH_SESSION_LIMIT_ENV_VAR, "1")
+    mcp_server = create_mcp_server(FakeScrapingdogClient())
+
+    first_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.GOOGLE_SEARCH,
+        {"query": "openai"},
+    )
+    second_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.GOOGLE_SEARCH,
+        {"query": "openai"},
+    )
+
+    assert first_result.isError is False
+    assert second_result.isError is True
+    second_result_text = call_tool_text(second_result)
+    assert "usage limit reached" in second_result_text
+    assert "Do not call google_search again" in second_result_text
+
+
+def test_webpage_scrape_session_limit_errors_after_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scrape limits apply after the configured number of successful calls."""
+
+    monkeypatch.setenv(WEBPAGE_SCRAPE_SESSION_LIMIT_ENV_VAR, "1")
+    mcp_server = create_mcp_server(FakeScrapingdogClient())
+
+    first_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.WEBPAGE_SCRAPE,
+        {"url": "https://example.com"},
+    )
+    second_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.WEBPAGE_SCRAPE,
+        {"url": "https://example.com"},
+    )
+
+    assert first_result.isError is False
+    assert second_result.isError is True
+    second_result_text = call_tool_text(second_result)
+    assert "usage limit reached" in second_result_text
+    assert "Do not call webpage_scrape again" in second_result_text
+
+
+def test_session_limits_are_independent_by_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exhausting one tool limit does not block the other tool."""
+
+    monkeypatch.setenv(GOOGLE_SEARCH_SESSION_LIMIT_ENV_VAR, "1")
+    monkeypatch.setenv(WEBPAGE_SCRAPE_SESSION_LIMIT_ENV_VAR, "1")
+    mcp_server = create_mcp_server(FakeScrapingdogClient())
+
+    search_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.GOOGLE_SEARCH,
+        {"query": "openai"},
+    )
+    limited_search_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.GOOGLE_SEARCH,
+        {"query": "openai"},
+    )
+    scrape_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.WEBPAGE_SCRAPE,
+        {"url": "https://example.com"},
+    )
+
+    assert search_result.isError is False
+    assert limited_search_result.isError is True
+    assert scrape_result.isError is False
+
+
+def test_validation_failures_do_not_consume_session_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Calls rejected by MCP validation do not count against the limit."""
+
+    monkeypatch.setenv(WEBPAGE_SCRAPE_SESSION_LIMIT_ENV_VAR, "1")
+    mcp_server = create_mcp_server(FakeScrapingdogClient())
+
+    invalid_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.WEBPAGE_SCRAPE,
+        {
+            "url": "https://example.com",
+            "formats": "pdf",
+        },
+    )
+    successful_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.WEBPAGE_SCRAPE,
+        {"url": "https://example.com"},
+    )
+    limited_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.WEBPAGE_SCRAPE,
+        {"url": "https://example.com"},
+    )
+
+    assert invalid_result.isError is True
+    assert successful_result.isError is False
+    assert limited_result.isError is True
+    assert "usage limit reached" in call_tool_text(limited_result)
+
+
+def test_scrapingdog_failures_do_not_consume_session_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scrapingdog client failures do not count against the limit."""
+
+    monkeypatch.setenv(GOOGLE_SEARCH_SESSION_LIMIT_ENV_VAR, "1")
+    mcp_server = create_mcp_server(IntermittentFailingScrapingdogClient())
+
+    failed_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.GOOGLE_SEARCH,
+        {"query": "openai"},
+    )
+    successful_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.GOOGLE_SEARCH,
+        {"query": "openai"},
+    )
+    limited_result = call_tool_result(
+        mcp_server,
+        ScrapingdogTools.GOOGLE_SEARCH,
+        {"query": "openai"},
+    )
+
+    assert failed_result.isError is True
+    failed_result_text = call_tool_text(failed_result)
+    assert "Scrapingdog API returned HTTP 500" in failed_result_text
+    assert successful_result.isError is False
+    assert limited_result.isError is True
+    assert "usage limit reached" in call_tool_text(limited_result)
+
+
+@pytest.mark.parametrize("limit_value", ["invalid", "0", "-1"])
+def test_invalid_session_limit_fails_startup(
+    monkeypatch: pytest.MonkeyPatch,
+    limit_value: str,
+) -> None:
+    """Invalid configured session limits fail server creation clearly."""
+
+    monkeypatch.setenv(GOOGLE_SEARCH_SESSION_LIMIT_ENV_VAR, limit_value)
+
+    with pytest.raises(
+        ScrapingdogConfigurationError,
+        match=(f"{GOOGLE_SEARCH_SESSION_LIMIT_ENV_VAR} " "must be a positive integer"),
+    ):
+        create_mcp_server(FakeScrapingdogClient())
 
 
 def test_expected_tool_failure_sets_is_error() -> None:

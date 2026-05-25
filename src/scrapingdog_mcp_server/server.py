@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import AsyncIterator
+from asyncio import Lock
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any, Literal, TypeVar
+from weakref import WeakKeyDictionary
 
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel
 
-from .core import ScrapingdogClient
+from .core import ScrapingdogClient, ScrapingdogConfigurationError
 from .enums import ScrapingdogTools
 from .metrics import (
     MetricsConfigurationError,
@@ -32,6 +34,8 @@ SERVER_INSTRUCTIONS = (
 )
 
 FORCE_ENV_PREFIX = "SCRAPINGDOG_FORCE_"
+GOOGLE_SEARCH_SESSION_LIMIT_ENV_VAR = "SCRAPINGDOG_GOOGLE_SEARCH_SESSION_LIMIT"
+WEBPAGE_SCRAPE_SESSION_LIMIT_ENV_VAR = "SCRAPINGDOG_WEBPAGE_SCRAPE_SESSION_LIMIT"
 
 READ_ONLY_OPEN_WEB_ANNOTATIONS = ToolAnnotations(
     readOnlyHint=True,
@@ -44,6 +48,22 @@ logger = logging.getLogger(__name__)
 RequestModelT = TypeVar("RequestModelT", bound=BaseModel)
 
 
+class SessionLimitFallbackKey:
+    """Weak-referenceable fallback key for direct in-process tool calls."""
+
+
+class UsageLimitReachedError(Exception):
+    """Error raised when a tool reaches its configured session usage limit."""
+
+
+class ToolUsageState:
+    """Mutable usage state for one tool in one MCP client session."""
+
+    def __init__(self) -> None:
+        self.successful_calls: int = 0
+        self.lock: Lock = Lock()
+
+
 class ScrapingdogMcpApplication:
     """Factory and registry for the Scrapingdog FastMCP server.
 
@@ -54,6 +74,14 @@ class ScrapingdogMcpApplication:
     def __init__(self, client: ScrapingdogClient | None = None) -> None:
         self.client: ScrapingdogClient = client or ScrapingdogClient()
         self.metrics_service: MetricsService | None = None
+        self.session_limits: dict[ScrapingdogTools, int] = self.load_session_limits()
+        self.session_usage: WeakKeyDictionary[
+            object,
+            dict[ScrapingdogTools, ToolUsageState],
+        ] = WeakKeyDictionary()
+        self.direct_call_session_key: SessionLimitFallbackKey = (
+            SessionLimitFallbackKey()
+        )
         self.mcp: FastMCP = FastMCP(
             "Scrapingdog",
             instructions=SERVER_INSTRUCTIONS,
@@ -136,6 +164,125 @@ class ScrapingdogMcpApplication:
 
         self._register_google_search_tool()
         self._register_scrape_tool()
+
+    def load_session_limits(self) -> dict[ScrapingdogTools, int]:
+        """Load configured per-session tool limits from the environment.
+
+        :return: Tool limits keyed by tool name.
+        :rtype: dict[ScrapingdogTools, int]
+        :raises ScrapingdogConfigurationError: If a limit is invalid.
+        """
+
+        env_vars = {
+            ScrapingdogTools.GOOGLE_SEARCH: (GOOGLE_SEARCH_SESSION_LIMIT_ENV_VAR),
+            ScrapingdogTools.WEBPAGE_SCRAPE: (WEBPAGE_SCRAPE_SESSION_LIMIT_ENV_VAR),
+        }
+        limits: dict[ScrapingdogTools, int] = {}
+        for tool_name, env_var_name in env_vars.items():
+            if env_var_name not in os.environ:
+                continue
+            raw_limit = os.environ[env_var_name]
+            try:
+                limit = int(raw_limit)
+            except ValueError as exc:
+                message = f"{env_var_name} must be a positive integer"
+                raise ScrapingdogConfigurationError(message) from exc
+            if limit <= 0:
+                message = f"{env_var_name} must be a positive integer"
+                raise ScrapingdogConfigurationError(message)
+            limits[tool_name] = limit
+        return limits
+
+    def get_session_key(self, ctx: Context[Any, Any, Any]) -> object:
+        """Return the key used for per-session tool usage state.
+
+        :param ctx: FastMCP request context.
+        :type ctx: Context[Any, Any, Any]
+        :return: MCP session object or direct-call fallback key.
+        :rtype: object
+        """
+
+        try:
+            return ctx.session
+        except ValueError:
+            return self.direct_call_session_key
+
+    def get_usage_state(
+        self,
+        ctx: Context[Any, Any, Any],
+        tool_name: ScrapingdogTools,
+    ) -> ToolUsageState:
+        """Return mutable usage state for a tool in the current session.
+
+        :param ctx: FastMCP request context.
+        :type ctx: Context[Any, Any, Any]
+        :param tool_name: Tool whose usage is being tracked.
+        :type tool_name: ScrapingdogTools
+        :return: Tool usage state.
+        :rtype: ToolUsageState
+        """
+
+        session_key = self.get_session_key(ctx)
+        usage_by_tool = self.session_usage.setdefault(session_key, {})
+        if tool_name not in usage_by_tool:
+            usage_by_tool[tool_name] = ToolUsageState()
+        return usage_by_tool[tool_name]
+
+    async def call_with_session_limit(
+        self,
+        ctx: Context[Any, Any, Any],
+        tool_name: ScrapingdogTools,
+        call: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        """Call a tool implementation while enforcing successful-call limits.
+
+        :param ctx: FastMCP request context.
+        :type ctx: Context[Any, Any, Any]
+        :param tool_name: Tool being called.
+        :type tool_name: ScrapingdogTools
+        :param call: Awaitable Scrapingdog client call.
+        :type call: Callable[[], Awaitable[dict[str, Any]]]
+        :return: Scrapingdog client response.
+        :rtype: dict[str, Any]
+        :raises UsageLimitReachedError: If the session limit is exhausted.
+        """
+
+        limit = self.session_limits.get(tool_name)
+        if limit is None:
+            return await call()
+
+        usage_state = self.get_usage_state(ctx, tool_name)
+        async with usage_state.lock:
+            if usage_state.successful_calls >= limit:
+                raise UsageLimitReachedError(
+                    self.build_usage_limit_message(tool_name, limit)
+                )
+            response = await call()
+            usage_state.successful_calls += 1
+            return response
+
+    @staticmethod
+    def build_usage_limit_message(
+        tool_name: ScrapingdogTools,
+        limit: int,
+    ) -> str:
+        """Build a model-directed usage limit error message.
+
+        :param tool_name: Tool whose limit has been reached.
+        :type tool_name: ScrapingdogTools
+        :param limit: Configured successful-call limit.
+        :type limit: int
+        :return: Usage limit error message.
+        :rtype: str
+        """
+
+        return (
+            f"usage limit reached: {tool_name.value} has reached its session "
+            f"limit of {limit} successful calls. Do not call "
+            f"{tool_name.value} "
+            "again in this MCP client session; further calls will fail until "
+            "a new session is started."
+        )
 
     def build_request(
         self,
@@ -239,6 +386,7 @@ class ScrapingdogMcpApplication:
 
         async def google_search(
             query: str,
+            ctx: Context[Any, Any, Any],
             advance_search: bool | None = None,
             mob_search: bool | None = None,
             html: bool | None = None,
@@ -270,7 +418,11 @@ class ScrapingdogMcpApplication:
                 results=results,
                 page=page,
             )
-            return await self.client.google(request)
+            return await self.call_with_session_limit(
+                ctx,
+                ScrapingdogTools.GOOGLE_SEARCH,
+                lambda: self.client.google(request),
+            )
 
         self.mcp.add_tool(
             google_search,
@@ -290,6 +442,7 @@ class ScrapingdogMcpApplication:
 
         async def webpage_scrape(
             url: str,
+            ctx: Context[Any, Any, Any],
             dynamic: bool | None = None,
             formats: Literal["markdown", "summary", "links", "images"] | None = None,
         ) -> dict[str, Any]:
@@ -301,7 +454,11 @@ class ScrapingdogMcpApplication:
                 dynamic=dynamic,
                 formats=formats,
             )
-            return await self.client.scrape(request)
+            return await self.call_with_session_limit(
+                ctx,
+                ScrapingdogTools.WEBPAGE_SCRAPE,
+                lambda: self.client.scrape(request),
+            )
 
         self.mcp.add_tool(
             webpage_scrape,
