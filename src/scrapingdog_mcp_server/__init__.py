@@ -1,4 +1,4 @@
-"""Command-line entrypoint for the Serper MCP server."""
+"""Command-line entrypoint for the Scrapingdog MCP server."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def parse_args() -> argparse.Namespace:
     :rtype: argparse.Namespace
     """
 
-    parser = argparse.ArgumentParser(description="Run the Serper MCP server.")
+    parser = argparse.ArgumentParser(description="Run the Scrapingdog MCP server.")
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -40,7 +40,7 @@ def configure_logging(debug: bool) -> None:
 
 
 def main() -> int:
-    """Run the Serper MCP server.
+    """Run the Scrapingdog MCP server.
 
     :return: Process exit code.
     :rtype: int

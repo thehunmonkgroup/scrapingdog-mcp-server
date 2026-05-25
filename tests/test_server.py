@@ -1,50 +1,50 @@
-"""Tests for the Serper FastMCP server."""
+"""Tests for the Scrapingdog FastMCP server."""
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, cast
+from typing import Any
 
 from mcp import types
 import pytest
 from typing_extensions import override
 
-from serper_mcp_server.core import SerperClient, SerperConfigurationError
-from serper_mcp_server.enums import SerperTools
-from serper_mcp_server.schemas import WebpageRequest
-from serper_mcp_server.server import SerperMcpApplication, create_mcp_server
+from scrapingdog_mcp_server.core import (
+    ScrapingdogClient,
+    ScrapingdogConfigurationError,
+)
+from scrapingdog_mcp_server.enums import ScrapingdogTools
+from scrapingdog_mcp_server.schemas import GoogleSearchRequest, WebpageRequest
+from scrapingdog_mcp_server.server import (
+    ScrapingdogMcpApplication,
+    create_mcp_server,
+)
 
 
-class FakeSerperClient(SerperClient):
-    """Serper client test double returning deterministic responses."""
+class FakeScrapingdogClient(ScrapingdogClient):
+    """Scrapingdog client test double returning deterministic responses."""
 
     def __init__(self) -> None:
         super().__init__(api_key="test-key")
-        self.last_tool: SerperTools | None = None
-        self.last_payload: dict[str, Any] | None = None
+        self.last_search_payload: dict[str, Any] | None = None
+        self.last_scrape_payload: dict[str, Any] | None = None
 
     @override
-    async def google(
-        self,
-        tool: SerperTools,
-        request: Any,
-    ) -> dict[str, Any]:
+    async def google(self, request: GoogleSearchRequest) -> dict[str, Any]:
         """Return a fake Google response.
 
-        :param tool: Serper tool enum value.
-        :type tool: SerperTools
-        :param request: Validated request model.
-        :type request: Any
-        :return: Fake Serper response.
+        :param request: Validated search request model.
+        :type request: GoogleSearchRequest
+        :return: Fake Scrapingdog response.
         :rtype: dict[str, Any]
         """
 
-        self.last_tool = tool
-        self.last_payload = cast(dict[str, Any], request.model_dump())
+        self.last_search_payload = request.model_dump()
         return {
-            "searchParameters": {"q": self.last_payload["q"]},
-            "organic": [{"title": "Example", "link": "https://example.com"}],
-            "credits": 1,
+            "organic_results": [{"title": "Example", "link": "https://example.com"}],
+            "search_information": {
+                "query_displayed": self.last_search_payload["query"]
+            },
         }
 
     @override
@@ -53,40 +53,33 @@ class FakeSerperClient(SerperClient):
 
         :param request: Validated webpage request.
         :type request: WebpageRequest
-        :return: Fake Serper scrape response.
+        :return: Fake wrapped Scrapingdog scrape response.
         :rtype: dict[str, Any]
         """
 
-        self.last_payload = request.model_dump()
+        self.last_scrape_payload = request.model_dump()
         return {
-            "text": "Example Domain",
-            "markdown": "# Example Domain",
-            "metadata": {"title": "Example Domain"},
-            "credits": 2,
+            "format": request.formats or "html",
+            "content": "# Example Domain",
+            "status": 200,
         }
 
 
-class FailingSerperClient(SerperClient):
-    """Serper client test double raising expected configuration errors."""
+class FailingScrapingdogClient(ScrapingdogClient):
+    """Scrapingdog client test double raising expected configuration errors."""
 
     @override
-    async def google(
-        self,
-        tool: SerperTools,
-        request: Any,
-    ) -> dict[str, Any]:
+    async def google(self, request: GoogleSearchRequest) -> dict[str, Any]:
         """Raise a configuration error.
 
-        :param tool: Serper tool enum value.
-        :type tool: SerperTools
-        :param request: Validated request model.
-        :type request: Any
+        :param request: Validated search request model.
+        :type request: GoogleSearchRequest
         :return: Never returns.
         :rtype: dict[str, Any]
-        :raises SerperConfigurationError: Always raised for this test double.
+        :raises ScrapingdogConfigurationError: Always raised.
         """
 
-        raise SerperConfigurationError("SERPER_API_KEY is empty")
+        raise ScrapingdogConfigurationError("SCRAPINGDOG_API_KEY is empty")
 
 
 def run_async(awaitable: Any) -> Any:
@@ -104,62 +97,72 @@ def run_async(awaitable: Any) -> Any:
 def test_tool_list_contains_expected_metadata() -> None:
     """All public tools expose useful metadata and annotations."""
 
-    mcp_server = create_mcp_server(FakeSerperClient())
+    mcp_server = create_mcp_server(FakeScrapingdogClient())
     tools = run_async(mcp_server.list_tools())
     tools_by_name = {tool.name: tool for tool in tools}
 
-    assert set(tools_by_name) == {tool.value for tool in SerperTools}
+    assert set(tools_by_name) == {tool.value for tool in ScrapingdogTools}
 
-    search_tool = tools_by_name[SerperTools.GOOGLE_SEARCH.value]
+    search_tool = tools_by_name[ScrapingdogTools.GOOGLE_SEARCH.value]
     assert search_tool.title == "Google Search"
-    assert search_tool.description == "Search Google web results through Serper."
+    assert search_tool.description == ("Search Google web results through Scrapingdog.")
     assert search_tool.outputSchema is not None
     assert search_tool.annotations is not None
     assert search_tool.annotations.readOnlyHint is True
     assert search_tool.annotations.destructiveHint is False
     assert search_tool.annotations.idempotentHint is False
     assert search_tool.annotations.openWorldHint is True
-    assert search_tool.inputSchema["properties"]["page"]["type"] == "integer"
-    assert search_tool.inputSchema["properties"]["num"]["type"] == "integer"
+    assert search_tool.inputSchema["properties"]["query"]["type"] == "string"
+    advance_search_schema = search_tool.inputSchema["properties"]["advance_search"]
+    assert {"type": "boolean"} in advance_search_schema["anyOf"]
 
-    scrape_tool = tools_by_name[SerperTools.WEBPAGE_SCRAPE.value]
-    include_markdown_schema = scrape_tool.inputSchema["properties"]["includeMarkdown"]
-    assert include_markdown_schema["type"] == "boolean"
+    scrape_tool = tools_by_name[ScrapingdogTools.WEBPAGE_SCRAPE.value]
+    assert scrape_tool.title == "Webpage Scrape"
+    assert scrape_tool.description == ("Scrape a webpage URL through Scrapingdog.")
+    dynamic_schema = scrape_tool.inputSchema["properties"]["dynamic"]
+    assert {"type": "boolean"} in dynamic_schema["anyOf"]
+    assert "formats" in scrape_tool.inputSchema["properties"]
 
 
 def test_google_search_returns_structured_content() -> None:
     """Successful search calls return structured content."""
 
-    client = FakeSerperClient()
+    client = FakeScrapingdogClient()
     mcp_server = create_mcp_server(client)
 
     content, structured_content = run_async(
         mcp_server.call_tool(
-            SerperTools.GOOGLE_SEARCH.value,
-            {"q": "openai", "num": 5, "page": 1},
+            ScrapingdogTools.GOOGLE_SEARCH.value,
+            {
+                "query": "openai",
+                "country": "us",
+                "language": "en",
+                "advance_search": True,
+            },
         )
     )
 
-    assert structured_content["credits"] == 1
-    assert structured_content["organic"][0]["title"] == "Example"
+    assert structured_content["organic_results"][0]["title"] == "Example"
     assert content[0].type == "text"
-    assert client.last_tool == SerperTools.GOOGLE_SEARCH
-    assert client.last_payload is not None
-    assert client.last_payload["num"] == 5
+    assert client.last_search_payload is not None
+    assert client.last_search_payload["query"] == "openai"
+    assert client.last_search_payload["country"] == "us"
+    assert client.last_search_payload["advance_search"] is True
+    assert client.last_search_payload["results"] == 10
+    assert client.last_search_payload["page"] == 0
 
 
 def test_forced_env_var_name_converts_parameter_names() -> None:
-    """Forced env var names are derived consistently from tool parameter names."""
+    """Forced env var names are derived from tool parameter names."""
 
-    assert SerperMcpApplication.force_env_var_name("gl") == "SERPER_FORCE_GL"
-    assert SerperMcpApplication.force_env_var_name("includeMarkdown") == (
-        "SERPER_FORCE_INCLUDE_MARKDOWN"
+    assert ScrapingdogMcpApplication.force_env_var_name("country") == (
+        "SCRAPINGDOG_FORCE_COUNTRY"
     )
-    assert SerperMcpApplication.force_env_var_name("nextPageToken") == (
-        "SERPER_FORCE_NEXT_PAGE_TOKEN"
+    assert ScrapingdogMcpApplication.force_env_var_name("advance_search") == (
+        "SCRAPINGDOG_FORCE_ADVANCE_SEARCH"
     )
-    assert SerperMcpApplication.force_env_var_name("placeId") == (
-        "SERPER_FORCE_PLACE_ID"
+    assert ScrapingdogMcpApplication.force_env_var_name("mob_search") == (
+        "SCRAPINGDOG_FORCE_MOB_SEARCH"
     )
 
 
@@ -168,43 +171,53 @@ def test_google_search_uses_forced_environment_values(
 ) -> None:
     """Search calls prefer forced environment values over caller arguments."""
 
-    monkeypatch.setenv("SERPER_FORCE_GL", "us")
-    monkeypatch.setenv("SERPER_FORCE_HL", "en")
-    monkeypatch.setenv("SERPER_FORCE_NUM", "7")
-    client = FakeSerperClient()
+    monkeypatch.setenv("SCRAPINGDOG_FORCE_COUNTRY", "us")
+    monkeypatch.setenv("SCRAPINGDOG_FORCE_LANGUAGE", "en")
+    monkeypatch.setenv("SCRAPINGDOG_FORCE_ADVANCE_SEARCH", "true")
+    client = FakeScrapingdogClient()
     mcp_server = create_mcp_server(client)
 
     run_async(
         mcp_server.call_tool(
-            SerperTools.GOOGLE_SEARCH.value,
-            {"q": "openai", "gl": "ca", "hl": "fr", "num": 5},
+            ScrapingdogTools.GOOGLE_SEARCH.value,
+            {
+                "query": "openai",
+                "country": "ca",
+                "language": "fr",
+                "advance_search": False,
+            },
         )
     )
 
-    assert client.last_payload is not None
-    assert client.last_payload["gl"] == "us"
-    assert client.last_payload["hl"] == "en"
-    assert client.last_payload["num"] == 7
+    assert client.last_search_payload is not None
+    assert client.last_search_payload["country"] == "us"
+    assert client.last_search_payload["language"] == "en"
+    assert client.last_search_payload["advance_search"] is True
 
 
 def test_webpage_scrape_returns_structured_content() -> None:
     """Successful scrape calls return structured content."""
 
-    client = FakeSerperClient()
+    client = FakeScrapingdogClient()
     mcp_server = create_mcp_server(client)
 
     content, structured_content = run_async(
         mcp_server.call_tool(
-            SerperTools.WEBPAGE_SCRAPE.value,
-            {"url": "https://example.com", "includeMarkdown": True},
+            ScrapingdogTools.WEBPAGE_SCRAPE.value,
+            {
+                "url": "https://example.com",
+                "dynamic": False,
+                "formats": "markdown",
+            },
         )
     )
 
-    assert structured_content["credits"] == 2
-    assert structured_content["metadata"]["title"] == "Example Domain"
+    assert structured_content["format"] == "markdown"
+    assert structured_content["content"] == "# Example Domain"
     assert content[0].type == "text"
-    assert client.last_payload is not None
-    assert client.last_payload["includeMarkdown"] is True
+    assert client.last_scrape_payload is not None
+    assert client.last_scrape_payload["dynamic"] is False
+    assert client.last_scrape_payload["formats"] == "markdown"
 
 
 def test_webpage_scrape_uses_forced_environment_values(
@@ -212,25 +225,31 @@ def test_webpage_scrape_uses_forced_environment_values(
 ) -> None:
     """Scrape calls prefer forced environment values over caller arguments."""
 
-    monkeypatch.setenv("SERPER_FORCE_INCLUDE_MARKDOWN", "true")
-    client = FakeSerperClient()
+    monkeypatch.setenv("SCRAPINGDOG_FORCE_DYNAMIC", "true")
+    monkeypatch.setenv("SCRAPINGDOG_FORCE_FORMATS", "summary")
+    client = FakeScrapingdogClient()
     mcp_server = create_mcp_server(client)
 
     run_async(
         mcp_server.call_tool(
-            SerperTools.WEBPAGE_SCRAPE.value,
-            {"url": "https://example.com", "includeMarkdown": False},
+            ScrapingdogTools.WEBPAGE_SCRAPE.value,
+            {
+                "url": "https://example.com",
+                "dynamic": False,
+                "formats": "markdown",
+            },
         )
     )
 
-    assert client.last_payload is not None
-    assert client.last_payload["includeMarkdown"] is True
+    assert client.last_scrape_payload is not None
+    assert client.last_scrape_payload["dynamic"] is True
+    assert client.last_scrape_payload["formats"] == "summary"
 
 
 def test_expected_tool_failure_sets_is_error() -> None:
     """Expected execution failures are exposed as MCP tool errors."""
 
-    mcp_server = create_mcp_server(FailingSerperClient())
+    mcp_server = create_mcp_server(FailingScrapingdogClient())
     low_level_server = getattr(mcp_server, "_mcp_server")
     handler = low_level_server.request_handlers[types.CallToolRequest]
 
@@ -238,8 +257,8 @@ def test_expected_tool_failure_sets_is_error() -> None:
         handler(
             types.CallToolRequest(
                 params=types.CallToolRequestParams(
-                    name=SerperTools.GOOGLE_SEARCH.value,
-                    arguments={"q": "openai"},
+                    name=ScrapingdogTools.GOOGLE_SEARCH.value,
+                    arguments={"query": "openai"},
                 )
             )
         )
@@ -247,13 +266,13 @@ def test_expected_tool_failure_sets_is_error() -> None:
 
     call_result = result.root
     assert call_result.isError is True
-    assert "SERPER_API_KEY is empty" in call_result.content[0].text
+    assert "SCRAPINGDOG_API_KEY is empty" in call_result.content[0].text
 
 
-def test_invalid_arguments_fail_validation() -> None:
-    """Invalid tool arguments are rejected before handler execution."""
+def test_invalid_format_fails_validation() -> None:
+    """Invalid scrape output formats are rejected before handler execution."""
 
-    mcp_server = create_mcp_server(FakeSerperClient())
+    mcp_server = create_mcp_server(FakeScrapingdogClient())
     low_level_server = getattr(mcp_server, "_mcp_server")
     handler = low_level_server.request_handlers[types.CallToolRequest]
 
@@ -261,8 +280,11 @@ def test_invalid_arguments_fail_validation() -> None:
         handler(
             types.CallToolRequest(
                 params=types.CallToolRequestParams(
-                    name=SerperTools.GOOGLE_SEARCH.value,
-                    arguments={"q": "openai", "num": 0},
+                    name=ScrapingdogTools.WEBPAGE_SCRAPE.value,
+                    arguments={
+                        "url": "https://example.com",
+                        "formats": "pdf",
+                    },
                 )
             )
         )

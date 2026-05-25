@@ -19,4 +19,4 @@ RUN apt-get update && \
 RUN pip install --no-cache-dir .
 
 # Default command
-ENTRYPOINT ["serper-mcp-server"]
+ENTRYPOINT ["scrapingdog-mcp-server"]

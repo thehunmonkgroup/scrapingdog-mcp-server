@@ -1,11 +1,8 @@
 [project]
-name = "serper-mcp-server"
+name = "scrapingdog-mcp-server"
 dynamic = ["version"]
-description = "A MCP server for Serper"
-keywords = ["serper", "mcp", "server", "google", "search"]
-authors = [
-    { name="Gary Meng", email="guozao.m@gmail.com" },
-]
+description = "A MCP server for Scrapingdog"
+keywords = ["scrapingdog", "mcp", "server", "google", "search", "scraping"]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -25,9 +22,8 @@ dev = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/garylab/serper-mcp-server"
-"Bug Tracker" = "https://github.com/garylab/serper-mcp-server/issues"
-"Author Blog" = "https://garymeng.com"
+"Homepage" = "https://github.com/hunmonk/scrapingdog-mcp-server"
+"Bug Tracker" = "https://github.com/hunmonk/scrapingdog-mcp-server/issues"
 
 [build-system]
 requires = ["setuptools>=61.0", "setuptools-scm"]
@@ -37,5 +33,12 @@ build-backend = "setuptools.build_meta"
 version_scheme = "post-release"
 local_scheme = "no-local-version"
 
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[tool.basedpyright]
+include = ["src", "tests"]
+exclude = ["src/*.egg-info"]
+
 [project.scripts]
-serper-mcp-server = "serper_mcp_server:main"
+scrapingdog-mcp-server = "scrapingdog_mcp_server:main"
