@@ -15,6 +15,7 @@ from scrapingdog_mcp_server.core import (
     ScrapingdogClient,
     ScrapingdogConfigurationError,
 )
+from scrapingdog_mcp_server.metrics import MetricEvent
 from scrapingdog_mcp_server.schemas import GoogleSearchRequest, WebpageRequest
 
 
@@ -91,6 +92,24 @@ class FakeSession:
         self.last_url = url
         self.last_params = params
         return self.response
+
+
+class FakeMetricsRecorder:
+    """Metrics recorder test double."""
+
+    def __init__(self) -> None:
+        self.events: list[MetricEvent] = []
+
+    async def record_request(self, event: MetricEvent) -> None:
+        """Record a metric event in memory.
+
+        :param event: Metric event.
+        :type event: MetricEvent
+        :return: None.
+        :rtype: None
+        """
+
+        self.events.append(event)
 
 
 def run_async(awaitable: Any) -> Any:
@@ -265,6 +284,53 @@ def test_google_uses_scrapingdog_get_endpoint() -> None:
     assert session.last_params == {"api_key": "test-key", "query": "openai"}
 
 
+def test_google_records_search_metric() -> None:
+    """Google Search records a portable search metric event."""
+
+    session = FakeSession(
+        FakeResponse(
+            json_body={
+                "organic_results": [{"title": "Example", "link": "https://example.com"}]
+            }
+        )
+    )
+    metrics = FakeMetricsRecorder()
+    client = ScrapingdogClient(
+        api_key="test-key",
+        session=cast(Any, session),
+        metrics=metrics,
+    )
+
+    run_async(
+        client.google(
+            GoogleSearchRequest(
+                query="openai",
+                advance_search=None,
+                mob_search=None,
+                html=None,
+                domain=None,
+                country=None,
+                location=None,
+                language=None,
+                safe=None,
+                nfpr=None,
+                filter=None,
+                results=None,
+                page=None,
+            )
+        )
+    )
+
+    assert len(metrics.events) == 1
+    event = metrics.events[0]
+    assert event.tool == "google_search"
+    assert event.request_type == "search"
+    assert event.succeeded is True
+    assert event.status_code == 200
+    assert event.query == "openai"
+    assert event.result_count == 1
+
+
 def test_scrape_wraps_raw_response_text() -> None:
     """Webpage scrape wraps raw Scrapingdog text into structured content."""
 
@@ -292,3 +358,35 @@ def test_scrape_wraps_raw_response_text() -> None:
         "dynamic": "false",
         "formats": "markdown",
     }
+
+
+def test_scrape_records_scrape_metric() -> None:
+    """Webpage scrape records a portable scrape metric event."""
+
+    session = FakeSession(FakeResponse(text="# Example Domain"))
+    metrics = FakeMetricsRecorder()
+    client = ScrapingdogClient(
+        api_key="test-key",
+        session=cast(Any, session),
+        metrics=metrics,
+    )
+
+    run_async(
+        client.scrape(
+            WebpageRequest(
+                url="https://example.com",
+                dynamic=False,
+                formats="markdown",
+            )
+        )
+    )
+
+    assert len(metrics.events) == 1
+    event = metrics.events[0]
+    assert event.tool == "webpage_scrape"
+    assert event.request_type == "scrape"
+    assert event.succeeded is True
+    assert event.status_code == 200
+    assert event.url == "https://example.com"
+    assert event.response_format == "markdown"
+    assert event.returned_bytes == len("# Example Domain".encode("utf-8"))

@@ -15,6 +15,14 @@ from pydantic import BaseModel
 
 from .core import ScrapingdogClient
 from .enums import ScrapingdogTools
+from .metrics import (
+    MetricsConfigurationError,
+    MetricsService,
+    NullMetricsRecorder,
+    get_metrics_host,
+    get_metrics_port,
+    metrics_enabled,
+)
 from .schemas import GoogleSearchRequest, WebpageRequest
 
 SERVER_INSTRUCTIONS = (
@@ -45,6 +53,7 @@ class ScrapingdogMcpApplication:
 
     def __init__(self, client: ScrapingdogClient | None = None) -> None:
         self.client: ScrapingdogClient = client or ScrapingdogClient()
+        self.metrics_service: MetricsService | None = None
         self.mcp: FastMCP = FastMCP(
             "Scrapingdog",
             instructions=SERVER_INSTRUCTIONS,
@@ -63,9 +72,60 @@ class ScrapingdogMcpApplication:
         """
 
         try:
+            await self.start_metrics()
             yield
         finally:
             await self.client.close()
+            await self.close_metrics()
+
+    async def start_metrics(self) -> None:
+        """Start the portable metrics service when enabled.
+
+        :return: None.
+        :rtype: None
+        """
+
+        if not metrics_enabled():
+            self.client.metrics = NullMetricsRecorder()
+            return
+
+        try:
+            self.metrics_service = MetricsService()
+        except Exception as exc:
+            logger.warning(
+                "MCP metrics disabled after initialization failure: %s",
+                exc,
+            )
+            self.client.metrics = NullMetricsRecorder()
+            self.metrics_service = None
+            return
+
+        self.client.metrics = self.metrics_service
+        try:
+            await self.metrics_service.start_http_server(
+                get_metrics_host(),
+                get_metrics_port(),
+            )
+        except MetricsConfigurationError:
+            await self.close_metrics()
+            raise
+        except Exception as exc:
+            logger.warning(
+                "MCP metrics HTTP sidecar disabled after failure: %s",
+                exc,
+            )
+
+    async def close_metrics(self) -> None:
+        """Close the metrics service when this process owns it.
+
+        :return: None.
+        :rtype: None
+        """
+
+        if self.metrics_service is not None:
+            await self.metrics_service.close()
+            self.metrics_service = None
+            self.client.metrics = NullMetricsRecorder()
 
     def register_tools(self) -> None:
         """Register all public MCP tools.
@@ -150,9 +210,9 @@ class ScrapingdogMcpApplication:
         env_name_parts: list[str] = []
         for index, character in enumerate(parameter_name):
             previous_character = parameter_name[index - 1] if index > 0 else ""
-            next_character = (
-                parameter_name[index + 1] if index + 1 < len(parameter_name) else ""
-            )
+            next_character = ""
+            if index + 1 < len(parameter_name):
+                next_character = parameter_name[index + 1]
             should_add_separator = (
                 index > 0
                 and character.isupper()

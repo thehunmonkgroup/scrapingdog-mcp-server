@@ -1,3 +1,6 @@
+# Data
+data/
+
 # Node.js
 node_modules/
 dist/

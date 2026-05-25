@@ -30,6 +30,32 @@ For example:
 }
 ```
 
+### Metrics Sidecar
+
+The server records portable SQLite metrics for search and scrape requests and
+starts a local HTTP sidecar when one is not already running. The default
+metrics endpoint is `http://127.0.0.1:3004`.
+
+The sidecar exposes:
+
+- `GET /health` - Identify the portable MCP metrics sidecar.
+- `GET /metrics?scope=current` - Report the current local-date run.
+- `GET /metrics?scope=all_time` - Report all recorded runs.
+- `GET /metrics?scope=run&run_id=1` - Report one run by ID.
+
+Metrics use one run per local `YYYY-MM-DD` date. Queries and URLs are stored
+only as SHA-256 hashes.
+
+Metrics configuration:
+
+- `MCP_METRICS_ENABLED` - Enable metrics. Defaults to `true`.
+- `MCP_METRICS_HOST` - Sidecar bind host. Defaults to `127.0.0.1`.
+- `MCP_METRICS_PORT` - Sidecar port. Defaults to `3004`.
+- `MCP_METRICS_DATA_DIR` - Directory for the default SQLite database.
+  Defaults to `data`.
+- `MCP_METRICS_DB_PATH` - Explicit SQLite database path. When set, this takes
+  precedence over `MCP_METRICS_DATA_DIR`.
+
 ## Tool Arguments
 
 `google_search` accepts `query`, `advance_search`, `mob_search`, `html`,
