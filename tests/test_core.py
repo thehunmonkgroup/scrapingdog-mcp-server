@@ -8,10 +8,10 @@ from typing import Any, cast
 import pytest
 
 from scrapingdog_mcp_server.core import (
-    AIOHTTP_TIMEOUT_ENV_VAR,
     DEFAULT_AIOHTTP_TIMEOUT_SECONDS,
     GOOGLE_SCRAPINGDOG_URL,
     SCRAPINGDOG_API_KEY_ENV_VAR,
+    SCRAPINGDOG_REQUEST_TIMEOUT_ENV_VAR,
     ScrapingdogClient,
     ScrapingdogConfigurationError,
 )
@@ -142,10 +142,10 @@ def test_timeout_default_is_used(
 ) -> None:
     """The default timeout is used when no environment value exists."""
 
-    monkeypatch.delenv(AIOHTTP_TIMEOUT_ENV_VAR, raising=False)
+    monkeypatch.delenv(SCRAPINGDOG_REQUEST_TIMEOUT_ENV_VAR, raising=False)
     client = ScrapingdogClient(api_key="test-key")
 
-    assert client.timeout_seconds == DEFAULT_AIOHTTP_TIMEOUT_SECONDS
+    assert client.timeout_seconds == DEFAULT_AIOHTTP_TIMEOUT_SECONDS == 30
 
 
 def test_invalid_timeout_raises_configuration_error(
@@ -153,7 +153,7 @@ def test_invalid_timeout_raises_configuration_error(
 ) -> None:
     """Invalid timeout configuration is reported clearly."""
 
-    monkeypatch.setenv(AIOHTTP_TIMEOUT_ENV_VAR, "invalid")
+    monkeypatch.setenv(SCRAPINGDOG_REQUEST_TIMEOUT_ENV_VAR, "invalid")
     client = ScrapingdogClient(api_key="test-key")
 
     with pytest.raises(

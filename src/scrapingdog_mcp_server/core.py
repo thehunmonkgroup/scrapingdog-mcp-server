@@ -15,11 +15,11 @@ from pydantic import BaseModel
 from .metrics import MetricEvent, MetricsRecorder, NullMetricsRecorder
 from .schemas import GoogleSearchRequest, WebpageRequest
 
-DEFAULT_AIOHTTP_TIMEOUT_SECONDS = 15
+DEFAULT_AIOHTTP_TIMEOUT_SECONDS = 30
 GOOGLE_SCRAPINGDOG_URL = "https://api.scrapingdog.com/google/"
 SCRAPE_SCRAPINGDOG_URL = "https://api.scrapingdog.com/scrape"
 SCRAPINGDOG_API_KEY_ENV_VAR = "SCRAPINGDOG_API_KEY"
-AIOHTTP_TIMEOUT_ENV_VAR = "AIOHTTP_TIMEOUT"
+SCRAPINGDOG_REQUEST_TIMEOUT_ENV_VAR = "SCRAPINGDOG_REQUEST_TIMEOUT"
 
 BOOLEAN_QUERY_FIELDS = frozenset({"advance_search", "mob_search", "html", "dynamic"})
 INTEGER_BOOLEAN_QUERY_FIELDS = frozenset({"nfpr", "filter"})
@@ -438,18 +438,18 @@ class ScrapingdogClient:
             return self._timeout_seconds
 
         value = os.getenv(
-            AIOHTTP_TIMEOUT_ENV_VAR,
+            SCRAPINGDOG_REQUEST_TIMEOUT_ENV_VAR,
             str(DEFAULT_AIOHTTP_TIMEOUT_SECONDS),
         ).strip()
         try:
             timeout_seconds = int(value)
         except ValueError as exc:
             raise ScrapingdogConfigurationError(
-                f"{AIOHTTP_TIMEOUT_ENV_VAR} must be an integer"
+                f"{SCRAPINGDOG_REQUEST_TIMEOUT_ENV_VAR} must be an integer"
             ) from exc
         if timeout_seconds <= 0:
             raise ScrapingdogConfigurationError(
-                f"{AIOHTTP_TIMEOUT_ENV_VAR} must be greater than 0"
+                f"{SCRAPINGDOG_REQUEST_TIMEOUT_ENV_VAR} must be greater than 0"
             )
         return timeout_seconds
 

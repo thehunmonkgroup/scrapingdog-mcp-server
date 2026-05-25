@@ -38,6 +38,10 @@ only successful Scrapingdog-backed calls count against it. Once a tool reaches
 its limit, further calls to that tool in the same session return a clear
 `usage limit reached` tool error.
 
+Scrapingdog API requests default to a 30-second timeout. Set
+`SCRAPINGDOG_REQUEST_TIMEOUT` to a positive integer number of seconds to
+override it.
+
 ### Metrics Sidecar
 
 The server records portable SQLite metrics for search and scrape requests and
