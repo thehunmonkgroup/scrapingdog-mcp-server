@@ -342,7 +342,7 @@ def test_scrape_wraps_raw_response_text() -> None:
             WebpageRequest(
                 url="https://example.com",
                 dynamic=False,
-                formats="markdown",
+                format="markdown",
             )
         )
     )
@@ -376,7 +376,7 @@ def test_scrape_records_scrape_metric() -> None:
             WebpageRequest(
                 url="https://example.com",
                 dynamic=False,
-                formats="markdown",
+                format="markdown",
             )
         )
     )

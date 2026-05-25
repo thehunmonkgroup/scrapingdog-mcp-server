@@ -225,7 +225,7 @@ class ScrapingdogClient:
                 await self.raise_for_error_status(response)
                 response_text = await response.text()
                 return {
-                    "format": request.formats or "html",
+                    "format": request.format or "html",
                     "content": response_text,
                     "status": response.status,
                 }
@@ -275,8 +275,23 @@ class ScrapingdogClient:
         for name, value in request.model_dump(exclude_none=True).items():
             if name in OMIT_FALSE_QUERY_FIELDS and value is False:
                 continue
-            params[name] = self.serialize_query_value(name, value)
+            query_name = self.query_parameter_name(name)
+            params[query_name] = self.serialize_query_value(name, value)
         return params
+
+    @staticmethod
+    def query_parameter_name(name: str) -> str:
+        """Return the Scrapingdog query parameter name for a model field.
+
+        :param name: Request model field name.
+        :type name: str
+        :return: Scrapingdog query parameter name.
+        :rtype: str
+        """
+
+        if name == "format":
+            return "formats"
+        return name
 
     def serialize_query_value(self, name: str, value: Any) -> str:
         """Serialize a model field value for Scrapingdog query parameters.
@@ -374,7 +389,7 @@ class ScrapingdogClient:
                 status_code=status_code,
                 url=request.url,
                 returned_bytes=count_response_content_bytes(response),
-                response_format=request.formats or "html",
+                response_format=request.format or "html",
                 error=error,
             )
         )

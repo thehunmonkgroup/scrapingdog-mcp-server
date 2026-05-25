@@ -71,7 +71,7 @@ class WebpageRequest(BaseModel):
         None,
         description="Enable dynamic browser rendering.",
     )
-    formats: Literal["markdown", "summary", "links", "images"] | None = Field(
+    format: Literal["markdown", "summary", "links", "images"] | None = Field(
         None,
         description="Optional output format. When omitted, HTML is returned.",
     )

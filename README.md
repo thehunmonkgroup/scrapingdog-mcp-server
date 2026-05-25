@@ -5,8 +5,8 @@ scraping through [Scrapingdog](https://www.scrapingdog.com/).
 
 ## Available Tools
 
-- `google_search` - Search Google web results through Scrapingdog.
-- `webpage_scrape` - Scrape a webpage URL through Scrapingdog.
+- `google_search` - Search Google web results.
+- `webpage_scrape` - Scrape a webpage URL.
 
 ## Configuration
 
@@ -15,8 +15,8 @@ Set `SCRAPINGDOG_API_KEY` to your Scrapingdog API key.
 Any tool parameter can be forced with a `SCRAPINGDOG_FORCE_` environment
 variable. Forced values take precedence over values passed by the MCP client.
 Parameter names are converted to upper snake case, so `advance_search` becomes
-`SCRAPINGDOG_FORCE_ADVANCE_SEARCH`, `formats` becomes
-`SCRAPINGDOG_FORCE_FORMATS`, and `country` becomes
+`SCRAPINGDOG_FORCE_ADVANCE_SEARCH`, `format` becomes
+`SCRAPINGDOG_FORCE_FORMAT`, and `country` becomes
 `SCRAPINGDOG_FORCE_COUNTRY`.
 
 For example:
@@ -74,8 +74,8 @@ Metrics configuration:
 `domain`, `country`, `location`, `language`, `safe`, `nfpr`, `filter`, and
 `results`, and `page`.
 
-`webpage_scrape` accepts `url`, `dynamic`, and `formats`. When `formats` is
-omitted, Scrapingdog returns HTML. Supported `formats` values are `markdown`,
+`webpage_scrape` accepts `url`, `dynamic`, and `format`. When `format` is
+omitted, the tool returns HTML. Supported `format` values are `markdown`,
 `summary`, `links`, and `images`.
 
 ## Usage

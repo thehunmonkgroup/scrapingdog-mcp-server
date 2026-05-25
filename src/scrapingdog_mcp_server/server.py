@@ -7,13 +7,13 @@ import os
 from asyncio import Lock
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any, Literal, TypeVar
+from typing import Annotated, Any, Literal, TypeVar
 from weakref import WeakKeyDictionary
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .core import ScrapingdogClient, ScrapingdogConfigurationError
 from .enums import ScrapingdogTools
@@ -385,22 +385,111 @@ class ScrapingdogMcpApplication:
         """
 
         async def google_search(
-            query: str,
+            query: Annotated[
+                str,
+                Field(
+                    description=(
+                        "Google search query. Supports operators like site:, "
+                        "inurl:, and intitle:."
+                    ),
+                ),
+            ],
             ctx: Context[Any, Any, Any],
-            advance_search: bool | None = None,
-            mob_search: bool | None = None,
-            html: bool | None = None,
-            domain: str | None = None,
-            country: str | None = None,
-            location: str | None = None,
-            language: str | None = None,
-            safe: Literal["active", "off"] | None = None,
-            nfpr: bool | None = None,
-            filter: bool | None = None,
-            results: int | None = 10,
-            page: int | None = 0,
+            advance_search: Annotated[
+                bool | None,
+                Field(
+                    description="Include advanced Google result features and snippets.",
+                ),
+            ] = None,
+            mob_search: Annotated[
+                bool | None,
+                Field(description="Return mobile Google search results."),
+            ] = None,
+            html: Annotated[
+                bool | None,
+                Field(
+                    description=(
+                        "Return raw Google results-page HTML instead of parsed JSON."
+                    ),
+                ),
+            ] = None,
+            domain: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Google domain to search, such as google.com or google.co.uk."
+                    ),
+                ),
+            ] = None,
+            country: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Two-letter country code for localized results, such as "
+                        "us, uk, or fr."
+                    ),
+                ),
+            ] = None,
+            location: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Search origin location; city-level values usually work best."
+                    ),
+                ),
+            ] = None,
+            language: Annotated[
+                str | None,
+                Field(
+                    description=(
+                        "Language code for results, such as en, es, fr, or de."
+                    ),
+                ),
+            ] = None,
+            safe: Annotated[
+                Literal["active", "off"] | None,
+                Field(
+                    description=(
+                        "SafeSearch setting: active filters adult content, off "
+                        "disables filtering."
+                    ),
+                ),
+            ] = None,
+            nfpr: Annotated[
+                bool | None,
+                Field(
+                    description=(
+                        "Exclude results from Google's auto-corrected spelling."
+                    ),
+                ),
+            ] = None,
+            filter: Annotated[
+                bool | None,
+                Field(
+                    description=(
+                        "Enable Google's similar and omitted-results filters."
+                    ),
+                ),
+            ] = None,
+            results: Annotated[
+                int | None,
+                Field(
+                    ge=1,
+                    description="Number of Google results to request.",
+                ),
+            ] = 10,
+            page: Annotated[
+                int | None,
+                Field(
+                    ge=0,
+                    description=(
+                        "Zero-based results page: 0 is the first page, 1 is the "
+                        "second."
+                    ),
+                ),
+            ] = 0,
         ) -> dict[str, Any]:
-            """Search Google web results through Scrapingdog."""
+            """Search Google web results."""
 
             request = self.build_request(
                 GoogleSearchRequest,
@@ -428,7 +517,7 @@ class ScrapingdogMcpApplication:
             google_search,
             name=ScrapingdogTools.GOOGLE_SEARCH.value,
             title="Google Search",
-            description="Search Google web results through Scrapingdog.",
+            description="Search Google web results.",
             annotations=READ_ONLY_OPEN_WEB_ANNOTATIONS,
             structured_output=True,
         )
@@ -441,18 +530,37 @@ class ScrapingdogMcpApplication:
         """
 
         async def webpage_scrape(
-            url: str,
+            url: Annotated[
+                str,
+                Field(description="Decoded absolute URL of the page to scrape."),
+            ],
             ctx: Context[Any, Any, Any],
-            dynamic: bool | None = None,
-            formats: Literal["markdown", "summary", "links", "images"] | None = None,
+            dynamic: Annotated[
+                bool | None,
+                Field(
+                    description=(
+                        "Render JavaScript before scraping. Defaults to true "
+                        "when omitted."
+                    ),
+                ),
+            ] = None,
+            format: Annotated[
+                Literal["markdown", "summary", "links", "images"] | None,
+                Field(
+                    description=(
+                        "Output format: markdown, summary, links, or images. "
+                        "Omit for HTML."
+                    ),
+                ),
+            ] = None,
         ) -> dict[str, Any]:
-            """Scrape a webpage through Scrapingdog."""
+            """Scrape a webpage URL."""
 
             request = self.build_request(
                 WebpageRequest,
                 url=url,
                 dynamic=dynamic,
-                formats=formats,
+                format=format,
             )
             return await self.call_with_session_limit(
                 ctx,
@@ -464,7 +572,7 @@ class ScrapingdogMcpApplication:
             webpage_scrape,
             name=ScrapingdogTools.WEBPAGE_SCRAPE.value,
             title="Webpage Scrape",
-            description="Scrape a webpage URL through Scrapingdog.",
+            description="Scrape a webpage URL.",
             annotations=READ_ONLY_OPEN_WEB_ANNOTATIONS,
             structured_output=True,
         )

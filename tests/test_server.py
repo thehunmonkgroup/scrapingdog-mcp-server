@@ -62,7 +62,7 @@ class FakeScrapingdogClient(ScrapingdogClient):
 
         self.last_scrape_payload = request.model_dump()
         return {
-            "format": request.formats or "html",
+            "format": request.format or "html",
             "content": "# Example Domain",
             "status": 200,
         }
@@ -192,23 +192,62 @@ def test_tool_list_contains_expected_metadata() -> None:
 
     search_tool = tools_by_name[ScrapingdogTools.GOOGLE_SEARCH.value]
     assert search_tool.title == "Google Search"
-    assert search_tool.description == ("Search Google web results through Scrapingdog.")
+    assert search_tool.description == "Search Google web results."
     assert search_tool.outputSchema is not None
     assert search_tool.annotations is not None
     assert search_tool.annotations.readOnlyHint is True
     assert search_tool.annotations.destructiveHint is False
     assert search_tool.annotations.idempotentHint is False
     assert search_tool.annotations.openWorldHint is True
-    assert search_tool.inputSchema["properties"]["query"]["type"] == "string"
+    search_properties = search_tool.inputSchema["properties"]
+    assert search_properties["query"]["type"] == "string"
     advance_search_schema = search_tool.inputSchema["properties"]["advance_search"]
     assert {"type": "boolean"} in advance_search_schema["anyOf"]
+    assert search_properties["results"]["anyOf"][0]["minimum"] == 1
+    assert search_properties["page"]["anyOf"][0]["minimum"] == 0
+    expected_search_descriptions = {
+        "query": (
+            "Google search query. Supports operators like site:, inurl:, and intitle:."
+        ),
+        "advance_search": "Include advanced Google result features and snippets.",
+        "mob_search": "Return mobile Google search results.",
+        "html": "Return raw Google results-page HTML instead of parsed JSON.",
+        "domain": "Google domain to search, such as google.com or google.co.uk.",
+        "country": (
+            "Two-letter country code for localized results, such as us, uk, or fr."
+        ),
+        "location": "Search origin location; city-level values usually work best.",
+        "language": "Language code for results, such as en, es, fr, or de.",
+        "safe": (
+            "SafeSearch setting: active filters adult content, off disables filtering."
+        ),
+        "nfpr": "Exclude results from Google's auto-corrected spelling.",
+        "filter": "Enable Google's similar and omitted-results filters.",
+        "results": "Number of Google results to request.",
+        "page": "Zero-based results page: 0 is the first page, 1 is the second.",
+    }
+    assert {
+        name: schema["description"] for name, schema in search_properties.items()
+    } == expected_search_descriptions
 
     scrape_tool = tools_by_name[ScrapingdogTools.WEBPAGE_SCRAPE.value]
     assert scrape_tool.title == "Webpage Scrape"
-    assert scrape_tool.description == ("Scrape a webpage URL through Scrapingdog.")
-    dynamic_schema = scrape_tool.inputSchema["properties"]["dynamic"]
+    assert scrape_tool.description == "Scrape a webpage URL."
+    scrape_properties = scrape_tool.inputSchema["properties"]
+    dynamic_schema = scrape_properties["dynamic"]
     assert {"type": "boolean"} in dynamic_schema["anyOf"]
-    assert "formats" in scrape_tool.inputSchema["properties"]
+    assert "format" in scrape_properties
+    assert "formats" not in scrape_properties
+    expected_scrape_descriptions = {
+        "url": "Decoded absolute URL of the page to scrape.",
+        "dynamic": "Render JavaScript before scraping. Defaults to true when omitted.",
+        "format": (
+            "Output format: markdown, summary, links, or images. Omit for HTML."
+        ),
+    }
+    assert {
+        name: schema["description"] for name, schema in scrape_properties.items()
+    } == expected_scrape_descriptions
 
 
 def test_google_search_returns_structured_content() -> None:
@@ -294,7 +333,7 @@ def test_webpage_scrape_returns_structured_content() -> None:
             {
                 "url": "https://example.com",
                 "dynamic": False,
-                "formats": "markdown",
+                "format": "markdown",
             },
         )
     )
@@ -304,7 +343,7 @@ def test_webpage_scrape_returns_structured_content() -> None:
     assert content[0].type == "text"
     assert client.last_scrape_payload is not None
     assert client.last_scrape_payload["dynamic"] is False
-    assert client.last_scrape_payload["formats"] == "markdown"
+    assert client.last_scrape_payload["format"] == "markdown"
 
 
 def test_webpage_scrape_uses_forced_environment_values(
@@ -313,7 +352,7 @@ def test_webpage_scrape_uses_forced_environment_values(
     """Scrape calls prefer forced environment values over caller arguments."""
 
     monkeypatch.setenv("SCRAPINGDOG_FORCE_DYNAMIC", "true")
-    monkeypatch.setenv("SCRAPINGDOG_FORCE_FORMATS", "summary")
+    monkeypatch.setenv("SCRAPINGDOG_FORCE_FORMAT", "summary")
     client = FakeScrapingdogClient()
     mcp_server = create_mcp_server(client)
 
@@ -323,14 +362,14 @@ def test_webpage_scrape_uses_forced_environment_values(
             {
                 "url": "https://example.com",
                 "dynamic": False,
-                "formats": "markdown",
+                "format": "markdown",
             },
         )
     )
 
     assert client.last_scrape_payload is not None
     assert client.last_scrape_payload["dynamic"] is True
-    assert client.last_scrape_payload["formats"] == "summary"
+    assert client.last_scrape_payload["format"] == "summary"
 
 
 def test_google_search_session_limit_errors_after_success(
@@ -428,7 +467,7 @@ def test_validation_failures_do_not_consume_session_limit(
         ScrapingdogTools.WEBPAGE_SCRAPE,
         {
             "url": "https://example.com",
-            "formats": "pdf",
+            "format": "pdf",
         },
     )
     successful_result = call_tool_result(
@@ -520,7 +559,7 @@ def test_expected_tool_failure_sets_is_error() -> None:
 
 
 def test_invalid_format_fails_validation() -> None:
-    """Invalid scrape output formats are rejected before handler execution."""
+    """Invalid scrape output format values are rejected before handler execution."""
 
     mcp_server = create_mcp_server(FakeScrapingdogClient())
     low_level_server = getattr(mcp_server, "_mcp_server")
@@ -533,7 +572,7 @@ def test_invalid_format_fails_validation() -> None:
                     name=ScrapingdogTools.WEBPAGE_SCRAPE.value,
                     arguments={
                         "url": "https://example.com",
-                        "formats": "pdf",
+                        "format": "pdf",
                     },
                 )
             )
