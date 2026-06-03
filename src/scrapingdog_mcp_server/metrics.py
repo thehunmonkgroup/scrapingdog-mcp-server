@@ -31,7 +31,7 @@ MAX_RECENT_FAILURES = 10
 
 MetricRequestType = Literal["search", "scrape"]
 MetricsScope = Literal["current", "all_time", "run"]
-MetricsProbeResult = Literal["metrics", "other", "unavailable"]
+MetricsProbeResult = Literal["metrics", "other", "unavailable", "unresponsive"]
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +136,10 @@ class MetricsPortConflictError(MetricsConfigurationError):
     """Error raised when the metrics port is occupied by another service."""
 
 
+class MetricsUnresponsivePortError(MetricsConfigurationError):
+    """Error raised when the metrics port is occupied but unresponsive."""
+
+
 class MetricsService:
     """SQLite metrics recorder and sidecar HTTP service.
 
@@ -212,6 +216,7 @@ class MetricsService:
         :return: None.
         :rtype: None
         :raises MetricsPortConflictError: If another service owns the port.
+        :raises MetricsUnresponsivePortError: If the port owner is unresponsive.
         """
 
         existing_service = await self.probe_metrics_service(host, port)
@@ -224,6 +229,8 @@ class MetricsService:
             return
         if existing_service == "other":
             raise self.metrics_port_conflict_error(host, port)
+        if existing_service == "unresponsive":
+            raise self.metrics_unresponsive_port_error(host, port)
 
         app = self.create_app()
         self.runner = web.AppRunner(app)
@@ -241,6 +248,8 @@ class MetricsService:
                     port,
                 )
                 return
+            if race_winner == "unresponsive":
+                raise self.metrics_unresponsive_port_error(host, port)
             raise self.metrics_port_conflict_error(host, port)
         logger.info("MCP metrics endpoint listening on %s:%s", host, port)
 
@@ -333,8 +342,12 @@ class MetricsService:
             async with ClientSession(timeout=timeout) as session:
                 async with session.get(url) as response:
                     body = await response.json(content_type=None)
-        except (TimeoutError, ClientError, OSError, ValueError):
+        except TimeoutError:
+            return "unresponsive"
+        except (ClientError, OSError):
             return "unavailable"
+        except ValueError:
+            return "other"
         if isinstance(body, dict) and body.get("service") == METRICS_SERVICE_ID:
             return "metrics"
         return "other"
@@ -730,6 +743,28 @@ class MetricsService:
             f"metrics with MCP_METRICS_ENABLED=false."
         )
         return MetricsPortConflictError(message)
+
+    @staticmethod
+    def metrics_unresponsive_port_error(
+        host: str,
+        port: int,
+    ) -> MetricsUnresponsivePortError:
+        """Create an unresponsive port owner error.
+
+        :param host: Host that was probed.
+        :type host: str
+        :param port: Port that was probed.
+        :type port: int
+        :return: Unresponsive port error.
+        :rtype: MetricsUnresponsivePortError
+        """
+
+        message = (
+            f"MCP metrics port {host}:{port} is already in use, but its "
+            "health endpoint did not respond. Kill the hung process that "
+            "owns this port, then restart the MCP server."
+        )
+        return MetricsUnresponsivePortError(message)
 
 
 def metrics_enabled() -> bool:

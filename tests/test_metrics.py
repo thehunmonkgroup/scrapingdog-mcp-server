@@ -18,6 +18,7 @@ from scrapingdog_mcp_server.metrics import (
     MetricsPortConflictError,
     MetricsProbeResult,
     MetricsService,
+    MetricsUnresponsivePortError,
     get_metrics_port,
     hash_value,
 )
@@ -239,6 +240,22 @@ def test_metrics_sidecar_raises_when_port_belongs_to_another_service(
 
     with pytest.raises(MetricsPortConflictError):
         run_async(service.start_http_server("127.0.0.1", 3004))
+
+    run_async(service.close())
+
+
+def test_metrics_sidecar_raises_when_port_owner_is_unresponsive(
+    tmp_path: Path,
+) -> None:
+    """An unresponsive metrics port owner raises an actionable error."""
+
+    service = ProbeMetricsService(tmp_path / "metrics.sqlite3", "unresponsive")
+
+    with pytest.raises(MetricsUnresponsivePortError) as error:
+        run_async(service.start_http_server("127.0.0.1", 3004))
+
+    assert "health endpoint did not respond" in str(error.value)
+    assert "Kill the hung process" in str(error.value)
 
     run_async(service.close())
 
