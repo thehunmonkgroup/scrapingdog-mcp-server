@@ -61,7 +61,37 @@ class ToolUsageState:
 
     def __init__(self) -> None:
         self.successful_calls: int = 0
+        self.in_flight_calls: int = 0
         self.lock: Lock = Lock()
+
+    async def reserve_call(self, limit: int) -> bool:
+        """Reserve session quota for a call without holding the state lock.
+
+        :param limit: Maximum successful and reserved calls.
+        :type limit: int
+        :return: Whether quota was reserved.
+        :rtype: bool
+        """
+
+        async with self.lock:
+            if self.successful_calls + self.in_flight_calls >= limit:
+                return False
+            self.in_flight_calls += 1
+            return True
+
+    async def finish_call(self, succeeded: bool) -> None:
+        """Release a reservation and record a successful call when applicable.
+
+        :param succeeded: Whether the reserved call succeeded.
+        :type succeeded: bool
+        :return: None.
+        :rtype: None
+        """
+
+        async with self.lock:
+            self.in_flight_calls -= 1
+            if succeeded:
+                self.successful_calls += 1
 
 
 class ScrapingdogMcpApplication:
@@ -252,14 +282,18 @@ class ScrapingdogMcpApplication:
             return await call()
 
         usage_state = self.get_usage_state(ctx, tool_name)
-        async with usage_state.lock:
-            if usage_state.successful_calls >= limit:
-                raise UsageLimitReachedError(
-                    self.build_usage_limit_message(tool_name, limit)
-                )
+        if not await usage_state.reserve_call(limit):
+            raise UsageLimitReachedError(
+                self.build_usage_limit_message(tool_name, limit)
+            )
+
+        succeeded = False
+        try:
             response = await call()
-            usage_state.successful_calls += 1
+            succeeded = True
             return response
+        finally:
+            await usage_state.finish_call(succeeded)
 
     @staticmethod
     def build_usage_limit_message(

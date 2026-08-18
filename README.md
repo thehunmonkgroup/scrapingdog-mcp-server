@@ -38,6 +38,14 @@ only successful Scrapingdog-backed calls count against it. Once a tool reaches
 its limit, further calls to that tool in the same session return a clear
 `usage limit reached` tool error.
 
+Set `SCRAPINGDOG_MAX_CONCURRENT_REQUESTS` to a positive integer to limit active
+Scrapingdog API requests across all tools and all MCP client sessions in the
+server process. When every request slot is active, an additional tool call is
+rejected immediately with a `WARNING` tool error instead of being submitted or
+queued. The response asks the caller to submit no more than the configured
+number of Scrapingdog tool calls at a time. When this setting is omitted, no
+application-level concurrency limit is applied.
+
 Scrapingdog API requests default to a 30-second timeout. Set
 `SCRAPINGDOG_REQUEST_TIMEOUT` to a positive integer number of seconds to
 override it.

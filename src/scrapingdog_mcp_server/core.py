@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import ssl
+from collections.abc import Iterator
+from contextlib import contextmanager
 from time import perf_counter
 from typing import Any
 
@@ -19,6 +21,7 @@ DEFAULT_AIOHTTP_TIMEOUT_SECONDS = 30
 GOOGLE_SCRAPINGDOG_URL = "https://api.scrapingdog.com/google/"
 SCRAPE_SCRAPINGDOG_URL = "https://api.scrapingdog.com/scrape"
 SCRAPINGDOG_API_KEY_ENV_VAR = "SCRAPINGDOG_API_KEY"
+SCRAPINGDOG_MAX_CONCURRENT_REQUESTS_ENV_VAR = "SCRAPINGDOG_MAX_CONCURRENT_REQUESTS"
 SCRAPINGDOG_REQUEST_TIMEOUT_ENV_VAR = "SCRAPINGDOG_REQUEST_TIMEOUT"
 
 BOOLEAN_QUERY_FIELDS = frozenset({"advance_search", "mob_search", "html", "dynamic"})
@@ -48,6 +51,67 @@ class ScrapingdogConfigurationError(ScrapingdogClientError):
     """Error raised when server configuration is invalid or incomplete."""
 
 
+class ScrapingdogConcurrencyLimitError(ScrapingdogClientError):
+    """Error raised when all outbound Scrapingdog request slots are active."""
+
+
+class ConcurrentRequestLimiter:
+    """Fail-fast concurrency gate for outbound Scrapingdog API requests.
+
+    :param maximum_requests: Maximum active requests, or ``None`` for no
+        application-level limit.
+    :type maximum_requests: int | None
+    """
+
+    def __init__(self, maximum_requests: int | None) -> None:
+        self.maximum_requests: int | None = maximum_requests
+        self.active_requests: int = 0
+
+    @contextmanager
+    def claim_request_slot(self) -> Iterator[None]:
+        """Claim an outbound request slot without waiting.
+
+        State transitions are synchronous because an aiohttp client and its
+        event loop execute task code cooperatively between await points.
+
+        :return: Context manager that releases the claimed request slot.
+        :rtype: Iterator[None]
+        :raises ScrapingdogConcurrencyLimitError: If every slot is active.
+        """
+
+        if (
+            self.maximum_requests is not None
+            and self.active_requests >= self.maximum_requests
+        ):
+            message = self.build_limit_message(self.maximum_requests)
+            logger.warning(message)
+            raise ScrapingdogConcurrencyLimitError(message)
+
+        self.active_requests += 1
+        try:
+            yield
+        finally:
+            self.active_requests -= 1
+
+    @staticmethod
+    def build_limit_message(maximum_requests: int) -> str:
+        """Build the model-directed concurrency warning.
+
+        :param maximum_requests: Configured concurrent request limit.
+        :type maximum_requests: int
+        :return: Warning explaining how the caller should retry.
+        :rtype: str
+        """
+
+        return (
+            "WARNING: The maximum of "
+            f"{maximum_requests} simultaneous Scrapingdog requests has been "
+            "reached. This request was not submitted or queued. Submit no more "
+            f"than {maximum_requests} Scrapingdog tool calls at a time, then "
+            "retry after an active request finishes."
+        )
+
+
 class ScrapingdogClient:
     """Reusable asynchronous Scrapingdog API client.
 
@@ -59,6 +123,9 @@ class ScrapingdogClient:
     :type timeout_seconds: int | None
     :param session: Optional injected aiohttp session for tests.
     :type session: aiohttp.ClientSession | None
+    :param max_concurrent_requests: Maximum simultaneous outbound requests.
+        When omitted, it is read from the environment.
+    :type max_concurrent_requests: int | None
     """
 
     def __init__(
@@ -67,12 +134,19 @@ class ScrapingdogClient:
         timeout_seconds: int | None = None,
         session: aiohttp.ClientSession | None = None,
         metrics: MetricsRecorder | None = None,
+        max_concurrent_requests: int | None = None,
     ) -> None:
         self._api_key: str | None = api_key
         self._timeout_seconds: int | None = timeout_seconds
         self._session: aiohttp.ClientSession | None = session
         self._owns_session: bool = session is None
         self.metrics: MetricsRecorder = metrics or NullMetricsRecorder()
+        self.max_concurrent_requests: int | None = self.load_max_concurrent_requests(
+            max_concurrent_requests
+        )
+        self.concurrent_request_limiter: ConcurrentRequestLimiter = (
+            ConcurrentRequestLimiter(self.max_concurrent_requests)
+        )
 
     async def google(self, request: GoogleSearchRequest) -> dict[str, Any]:
         """Search Google through Scrapingdog.
@@ -175,16 +249,17 @@ class ScrapingdogClient:
         logger.debug("Getting Scrapingdog request from %s", url)
 
         try:
-            async with session.get(url, params=params) as response:
-                await self.raise_for_error_status(response)
-                try:
-                    json_body = await response.json(content_type=None)
-                except aiohttp.ContentTypeError as exc:
-                    raise ScrapingdogClientError(
-                        "Scrapingdog API returned a non-JSON response",
-                        response.status,
-                    ) from exc
-                status_code = response.status
+            with self.concurrent_request_limiter.claim_request_slot():
+                async with session.get(url, params=params) as response:
+                    await self.raise_for_error_status(response)
+                    try:
+                        json_body = await response.json(content_type=None)
+                    except aiohttp.ContentTypeError as exc:
+                        raise ScrapingdogClientError(
+                            "Scrapingdog API returned a non-JSON response",
+                            response.status,
+                        ) from exc
+                    status_code = response.status
         except TimeoutError as exc:
             logger.warning("Scrapingdog request timed out: %s", url)
             raise ScrapingdogClientError("Scrapingdog API request timed out") from exc
@@ -221,14 +296,15 @@ class ScrapingdogClient:
         logger.debug("Getting Scrapingdog request from %s", url)
 
         try:
-            async with session.get(url, params=params) as response:
-                await self.raise_for_error_status(response)
-                response_text = await response.text()
-                return {
-                    "format": request.format or "html",
-                    "content": response_text,
-                    "status": response.status,
-                }
+            with self.concurrent_request_limiter.claim_request_slot():
+                async with session.get(url, params=params) as response:
+                    await self.raise_for_error_status(response)
+                    response_text = await response.text()
+                    return {
+                        "format": request.format or "html",
+                        "content": response_text,
+                        "status": response.status,
+                    }
         except TimeoutError as exc:
             logger.warning("Scrapingdog request timed out: %s", url)
             raise ScrapingdogClientError("Scrapingdog API request timed out") from exc
@@ -410,7 +486,13 @@ class ScrapingdogClient:
 
         if self._session is None or self._session.closed:
             ssl_context = ssl.create_default_context(cafile=certifi.where())
-            connector = aiohttp.TCPConnector(ssl=ssl_context)
+            if self.max_concurrent_requests is None:
+                connector = aiohttp.TCPConnector(ssl=ssl_context)
+            else:
+                connector = aiohttp.TCPConnector(
+                    ssl=ssl_context,
+                    limit=self.max_concurrent_requests,
+                )
             timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
             self._session = aiohttp.ClientSession(
                 connector=connector,
@@ -467,6 +549,41 @@ class ScrapingdogClient:
                 f"{SCRAPINGDOG_REQUEST_TIMEOUT_ENV_VAR} must be greater than 0"
             )
         return timeout_seconds
+
+    @staticmethod
+    def load_max_concurrent_requests(configured_value: int | None) -> int | None:
+        """Load and validate the outbound concurrency limit.
+
+        :param configured_value: Explicit maximum, or ``None`` to read the
+            environment.
+        :type configured_value: int | None
+        :return: Positive concurrency limit, or ``None`` when disabled.
+        :rtype: int | None
+        :raises ScrapingdogConfigurationError: If the configured value is not
+            a positive integer.
+        """
+
+        error_message = (
+            f"{SCRAPINGDOG_MAX_CONCURRENT_REQUESTS_ENV_VAR} must be a positive "
+            f"integer"
+        )
+
+        if configured_value is not None:
+            if configured_value <= 0:
+                raise ScrapingdogConfigurationError(error_message)
+            return configured_value
+
+        if SCRAPINGDOG_MAX_CONCURRENT_REQUESTS_ENV_VAR not in os.environ:
+            return None
+
+        raw_value = os.environ[SCRAPINGDOG_MAX_CONCURRENT_REQUESTS_ENV_VAR]
+        try:
+            maximum_requests = int(raw_value)
+        except ValueError as exc:
+            raise ScrapingdogConfigurationError(error_message) from exc
+        if maximum_requests <= 0:
+            raise ScrapingdogConfigurationError(error_message)
+        return maximum_requests
 
 
 def elapsed_ms(started_at: float) -> float:
